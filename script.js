@@ -390,31 +390,9 @@ class CrosswordApp {
     const saved = this.loadState();
     this.applyTheme(saved?.theme || "light");
 
-    if (saved?.layout) {
-      try {
-        this.layout = new CrosswordGenerator(this.entries).fromPlacements(saved.layout);
-        this.values = new Map(Object.entries(saved.values || {}));
-        this.elapsedSeconds = Number(saved.elapsedSeconds || 0);
-        this.wordTimings = new Map(Object.entries(saved.wordTimings || {}));
-        this.checkedPlacements = new Set(saved.checkedPlacements || []);
-        this.lastInputAt = Number.isFinite(saved.lastInputAt) ? saved.lastInputAt : null;
-        this.longestPause = Number(saved.longestPause || 0);
-        this.revealedSolution = Boolean(saved.revealedSolution);
-        this.initializeSelection();
-        this.ensureWordTimings();
-      } catch (error) {
-        this.createNewLayout(false);
-      }
-    } else {
-      this.createNewLayout(false);
-    }
-
     this.bindEvents();
-    this.render();
-    this.updateProgress();
-    this.evaluateCompletion(false);
-    this.renderStats(this.completed || this.revealedSolution);
-    this.saveState();
+    this.renderEmptyState();
+    this.updateControls();
     this.startTimer();
   }
 
@@ -483,19 +461,50 @@ class CrosswordApp {
   }
 
   render() {
+    if (!this.layout) {
+      this.renderEmptyState();
+      return;
+    }
+
     this.renderGrid();
     this.renderClues();
     this.updateProgress();
     this.updateTimer();
+    this.updateControls();
     this.focusActiveCell();
   }
 
+  renderEmptyState() {
+    this.elements.grid.innerHTML =
+      '<div class="empty-state">Premi "Nuovo cruciverba" per generare la griglia.</div>';
+    this.elements.grid.classList.remove("animating");
+    this.elements.grid.style.setProperty("--grid-columns", 1);
+    this.elements.grid.style.setProperty("--grid-min-width", "260px");
+    this.elements.acrossClues.innerHTML = "";
+    this.elements.downClues.innerHTML = "";
+    this.elements.completion.textContent = "Completamento: 0%";
+    this.elements.timer.textContent = "00:00";
+    this.renderStats(false);
+    this.setMessage("");
+    this.updateControls();
+  }
+
+  updateControls() {
+    const hasPuzzle = Boolean(this.layout);
+    this.elements.checkButton.disabled = !hasPuzzle;
+    this.elements.resetButton.disabled = !hasPuzzle;
+    this.elements.solveButton.disabled = !hasPuzzle;
+  }
+
   renderGrid() {
+    if (!this.layout) return;
+
     const { grid } = this.elements;
     const { bounds } = this.layout;
     const width = bounds.maxCol - bounds.minCol + 1;
     grid.innerHTML = "";
     grid.style.setProperty("--grid-columns", width);
+    grid.style.setProperty("--grid-min-width", `${width * 30 + Math.max(0, width - 1) * 2}px`);
     grid.classList.toggle("animating", this.animateNextRender);
 
     let tileIndex = 0;
@@ -577,6 +586,12 @@ class CrosswordApp {
   }
 
   renderClues() {
+    if (!this.layout) {
+      this.elements.acrossClues.innerHTML = "";
+      this.elements.downClues.innerHTML = "";
+      return;
+    }
+
     this.elements.acrossClues.innerHTML = "";
     this.elements.downClues.innerHTML = "";
 
@@ -854,6 +869,8 @@ class CrosswordApp {
   }
 
   afterValueChange({ clearChecked = true, changedPlacementId = null, autoCheck = false } = {}) {
+    if (!this.layout) return;
+
     if (clearChecked) {
       this.checked = false;
     }
@@ -874,6 +891,11 @@ class CrosswordApp {
   }
 
   updateProgress() {
+    if (!this.layout) {
+      this.elements.completion.textContent = "Completamento: 0%";
+      return;
+    }
+
     const total = this.layout.cells.size || 1;
     const filled = [...this.layout.cells.keys()].filter((key) => this.values.get(key)).length;
     const percent = Math.round((filled / total) * 100);
@@ -881,6 +903,12 @@ class CrosswordApp {
   }
 
   renderStats(visible) {
+    if (!this.layout) {
+      this.elements.statsPanel.hidden = true;
+      this.elements.statsList.innerHTML = "";
+      return;
+    }
+
     this.elements.statsPanel.hidden = !visible;
     if (!visible) {
       this.elements.statsList.innerHTML = "";
@@ -949,6 +977,8 @@ class CrosswordApp {
   }
 
   checkAnswers() {
+    if (!this.layout) return;
+
     this.checkActivePlacement();
     this.refreshCells();
     this.updateProgress();
@@ -957,6 +987,8 @@ class CrosswordApp {
   }
 
   solvePuzzle() {
+    if (!this.layout) return;
+
     if (!window.confirm("Mostrare la soluzione completa? Questa azione riempira tutte le caselle.")) {
       return;
     }
@@ -974,6 +1006,8 @@ class CrosswordApp {
   }
 
   resetPuzzle() {
+    if (!this.layout) return;
+
     if (!window.confirm("Svuotare il cruciverba e azzerare il timer?")) {
       return;
     }
@@ -1003,9 +1037,12 @@ class CrosswordApp {
     this.renderStats(false);
     this.render();
     this.saveState();
+    this.startTimer();
   }
 
   evaluateCompletion(showPartialMessage = false) {
+    if (!this.layout) return;
+
     const allCorrect = [...this.layout.cells.entries()].every(
       ([key, cell]) => this.values.get(key) === cell.letter,
     );
@@ -1054,7 +1091,7 @@ class CrosswordApp {
   startTimer() {
     window.clearInterval(this.timerId);
     this.timerId = window.setInterval(() => {
-      if (!this.completed) {
+      if (this.layout && !this.completed) {
         this.elapsedSeconds += 1;
         this.updateTimer();
         this.saveState();
@@ -1075,11 +1112,21 @@ class CrosswordApp {
   }
 
   getPlacement(placementId) {
+    if (!this.layout) return null;
     return this.layout.placements.find((placement) => placement.id === placementId);
   }
 
   saveState() {
     const theme = document.body.classList.contains("dark") ? "dark" : "light";
+    if (!this.layout) {
+      try {
+        localStorage.setItem(this.storageKey, JSON.stringify({ hash: this.hash, theme }));
+      } catch (error) {
+        // Alcuni browser possono bloccare localStorage su file locali o in modalita privata.
+      }
+      return;
+    }
+
     const layout = this.layout.placements.map((placement) => ({
       originalIndex: placement.originalIndex,
       row: placement.row,
