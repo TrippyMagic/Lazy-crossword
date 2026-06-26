@@ -35,6 +35,8 @@ const DIRECTIONS = {
 };
 
 const STORAGE_PREFIX = "lazyCrossword";
+const EMPTY_GRID_EXTRA_COLUMNS = 8;
+const EMPTY_GRID_EXTRA_ROWS = 8;
 
 function normalizeAnswer(value) {
   return String(value || "")
@@ -368,6 +370,7 @@ class CrosswordApp {
     this.lastInputAt = null;
     this.longestPause = 0;
     this.animateNextRender = false;
+    this.displayTileStates = new Map();
 
     this.elements = {
       grid: document.querySelector("#grid"),
@@ -466,20 +469,43 @@ class CrosswordApp {
       return;
     }
 
+    const shouldFocusActiveCell = !this.animateNextRender;
     this.renderGrid();
     this.renderClues();
     this.updateProgress();
     this.updateTimer();
     this.updateControls();
-    this.focusActiveCell();
+    if (shouldFocusActiveCell) {
+      this.focusActiveCell();
+    }
   }
 
   renderEmptyState() {
-    this.elements.grid.innerHTML =
-      '<div class="empty-state">Premi "Nuovo cruciverba" per generare la griglia.</div>';
-    this.elements.grid.classList.remove("animating");
-    this.elements.grid.style.setProperty("--grid-columns", 1);
-    this.elements.grid.style.setProperty("--grid-min-width", "260px");
+    const size = this.getEmptyGridSize();
+    this.elements.grid.innerHTML = "";
+    this.elements.grid.classList.remove("revealing");
+    this.elements.grid.style.setProperty("--grid-columns", size.columns);
+    this.elements.grid.style.setProperty(
+      "--grid-min-width",
+      `${size.columns * 30 + Math.max(0, size.columns - 1) * 2}px`,
+    );
+    this.displayTileStates = new Map();
+
+    for (let row = 0; row < size.rows; row += 1) {
+      for (let col = 0; col < size.columns; col += 1) {
+        const displayKey = toCellKey(row, col);
+        this.displayTileStates.set(displayKey, false);
+        this.elements.grid.appendChild(
+          this.createBlackCellElement({
+            displayKey,
+            waveIndex: row + col,
+            previousUsed: false,
+            shouldReveal: false,
+          }),
+        );
+      }
+    }
+
     this.elements.acrossClues.innerHTML = "";
     this.elements.downClues.innerHTML = "";
     this.elements.completion.textContent = "Completamento: 0%";
@@ -487,6 +513,17 @@ class CrosswordApp {
     this.renderStats(false);
     this.setMessage("");
     this.updateControls();
+  }
+
+  getEmptyGridSize() {
+    const totalLetters = this.entries.reduce((total, entry) => total + entry.answer.length, 0);
+    const longestWord = this.entries.reduce(
+      (longest, entry) => Math.max(longest, entry.answer.length),
+      0,
+    );
+    const columns = Math.max(16, longestWord + EMPTY_GRID_EXTRA_COLUMNS);
+    const rows = Math.max(12, Math.ceil(totalLetters / columns) + EMPTY_GRID_EXTRA_ROWS);
+    return { columns, rows };
   }
 
   updateControls() {
@@ -502,47 +539,95 @@ class CrosswordApp {
     const { grid } = this.elements;
     const { bounds } = this.layout;
     const width = bounds.maxCol - bounds.minCol + 1;
+    const previousStates = new Map(this.displayTileStates);
+    const nextStates = new Map();
     grid.innerHTML = "";
     grid.style.setProperty("--grid-columns", width);
     grid.style.setProperty("--grid-min-width", `${width * 30 + Math.max(0, width - 1) * 2}px`);
-    grid.classList.toggle("animating", this.animateNextRender);
+    grid.classList.toggle("revealing", this.animateNextRender);
 
-    let tileIndex = 0;
-    for (let row = bounds.minRow; row <= bounds.maxRow; row += 1) {
-      for (let col = bounds.minCol; col <= bounds.maxCol; col += 1) {
+    for (let row = bounds.minRow, displayRow = 0; row <= bounds.maxRow; row += 1, displayRow += 1) {
+      for (
+        let col = bounds.minCol, displayCol = 0;
+        col <= bounds.maxCol;
+        col += 1, displayCol += 1
+      ) {
         const key = toCellKey(row, col);
+        const displayKey = toCellKey(displayRow, displayCol);
         const cell = this.layout.cells.get(key);
+        const previousUsed = previousStates.get(displayKey) === true;
+        const waveIndex = displayRow + displayCol;
+        nextStates.set(displayKey, Boolean(cell));
 
         if (!cell) {
-          const black = document.createElement("div");
-          black.className = "cell black";
-          grid.appendChild(black);
+          grid.appendChild(
+            this.createBlackCellElement({
+              displayKey,
+              waveIndex,
+              previousUsed,
+              shouldReveal: this.animateNextRender,
+            }),
+          );
           continue;
         }
 
-        grid.appendChild(this.createCellElement(key, cell, tileIndex));
-        tileIndex += 1;
+        grid.appendChild(
+          this.createCellElement({
+            key,
+            cell,
+            displayKey,
+            waveIndex,
+            previousUsed,
+            shouldReveal: this.animateNextRender,
+          }),
+        );
       }
     }
 
+    this.displayTileStates = nextStates;
+
     if (this.animateNextRender) {
-      window.setTimeout(() => grid.classList.remove("animating"), 800);
+      window.setTimeout(() => grid.classList.remove("revealing"), 1200);
       this.animateNextRender = false;
     }
   }
 
-  createCellElement(key, cell, tileIndex) {
+  createBlackCellElement({ displayKey, waveIndex, previousUsed, shouldReveal }) {
     const wrapper = document.createElement("div");
-    wrapper.className = this.cellClassName(key, cell);
+    wrapper.className = this.tileClassName({
+      finalClass: "black",
+      previousUsed,
+      shouldReveal,
+    });
+    wrapper.dataset.displayKey = displayKey;
+    wrapper.style.setProperty("--tile-delay", `${Math.min(waveIndex * 28, 760)}ms`);
+
+    const card = this.createTileCard();
+    card.querySelector(".tile-front").setAttribute("aria-hidden", "true");
+    wrapper.appendChild(card);
+    return wrapper;
+  }
+
+  createCellElement({ key, cell, displayKey, waveIndex, previousUsed, shouldReveal }) {
+    const wrapper = document.createElement("div");
+    wrapper.className = this.tileClassName({
+      finalClass: this.cellClassName(key, cell),
+      previousUsed,
+      shouldReveal,
+    });
     wrapper.dataset.key = key;
-    wrapper.style.setProperty("--tile-delay", `${Math.min(tileIndex * 5, 240)}ms`);
+    wrapper.dataset.displayKey = displayKey;
+    wrapper.style.setProperty("--tile-delay", `${Math.min(waveIndex * 28, 760)}ms`);
+
+    const card = this.createTileCard();
+    const front = card.querySelector(".tile-front");
 
     const number = this.getCellNumber(key);
     if (number) {
       const numberElement = document.createElement("span");
       numberElement.className = "number";
       numberElement.textContent = number;
-      wrapper.appendChild(numberElement);
+      front.appendChild(numberElement);
     }
 
     const input = document.createElement("input");
@@ -561,8 +646,31 @@ class CrosswordApp {
     input.addEventListener("keydown", (event) => this.handleKeydown(event, key));
     input.addEventListener("input", (event) => this.handleInput(event, key));
 
-    wrapper.appendChild(input);
+    front.appendChild(input);
+    wrapper.appendChild(card);
     return wrapper;
+  }
+
+  createTileCard() {
+    const card = document.createElement("div");
+    card.className = "cell-card";
+
+    const back = document.createElement("div");
+    back.className = "tile-face tile-back";
+
+    const front = document.createElement("div");
+    front.className = "tile-face tile-front";
+
+    card.append(back, front);
+    return card;
+  }
+
+  tileClassName({ finalClass, previousUsed, shouldReveal }) {
+    const classes = ["cell", previousUsed ? "from-used" : "from-black", finalClass];
+    if (shouldReveal) {
+      classes.push("revealing");
+    }
+    return classes.join(" ");
   }
 
   cellClassName(key, cell) {
