@@ -22,18 +22,25 @@
       <main class="layout">
         <section class="crossword-panel" aria-label="Cruciverba">
           <div class="toolbar" aria-label="Azioni cruciverba">
-            <button type="button" id="check-button">Controlla</button>
-            <button type="button" id="solve-button">Mostra soluzione</button>
-            <button type="button" id="reset-button">Reset</button>
-            <button type="button" id="new-button">Nuovo cruciverba</button>
-            <button type="button" id="theme-button" aria-pressed="false">Tema scuro</button>
-            <button type="button" id="print-button">Stampa</button>
+            <div class="toolbar-main">
+              <button type="button" id="check-button">Controlla</button>
+              <button type="button" id="reset-button">Reset</button>
+              <button type="button" id="new-button">Nuovo cruciverba</button>
+              <button type="button" id="theme-button" aria-pressed="false">Tema scuro</button>
+            </div>
+            <div class="toolbar-solution">
+              <button type="button" id="solve-button">Mostra soluzione</button>
+            </div>
           </div>
 
           <p id="message" class="message" aria-live="polite"></p>
           <div class="grid-wrap">
             <div id="grid" class="crossword-grid" aria-label="Griglia cruciverba"></div>
           </div>
+          <section id="stats-panel" class="stats-panel" aria-live="polite" hidden>
+            <h2>Statistiche</h2>
+            <div id="stats-list" class="stats-list"></div>
+          </section>
         </section>
 
         <aside class="clues-panel" aria-label="Definizioni">

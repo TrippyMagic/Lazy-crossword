@@ -359,9 +359,15 @@ class CrosswordApp {
     this.activeCellKey = null;
     this.activePlacementId = null;
     this.checked = false;
+    this.checkedPlacements = new Set();
     this.elapsedSeconds = 0;
     this.completed = false;
+    this.revealedSolution = false;
     this.timerId = null;
+    this.wordTimings = new Map();
+    this.lastInputAt = null;
+    this.longestPause = 0;
+    this.animateNextRender = false;
 
     this.elements = {
       grid: document.querySelector("#grid"),
@@ -370,12 +376,13 @@ class CrosswordApp {
       completion: document.querySelector("#completion"),
       timer: document.querySelector("#timer"),
       message: document.querySelector("#message"),
+      statsPanel: document.querySelector("#stats-panel"),
+      statsList: document.querySelector("#stats-list"),
       checkButton: document.querySelector("#check-button"),
       solveButton: document.querySelector("#solve-button"),
       resetButton: document.querySelector("#reset-button"),
       newButton: document.querySelector("#new-button"),
       themeButton: document.querySelector("#theme-button"),
-      printButton: document.querySelector("#print-button"),
     };
   }
 
@@ -388,7 +395,13 @@ class CrosswordApp {
         this.layout = new CrosswordGenerator(this.entries).fromPlacements(saved.layout);
         this.values = new Map(Object.entries(saved.values || {}));
         this.elapsedSeconds = Number(saved.elapsedSeconds || 0);
+        this.wordTimings = new Map(Object.entries(saved.wordTimings || {}));
+        this.checkedPlacements = new Set(saved.checkedPlacements || []);
+        this.lastInputAt = Number.isFinite(saved.lastInputAt) ? saved.lastInputAt : null;
+        this.longestPause = Number(saved.longestPause || 0);
+        this.revealedSolution = Boolean(saved.revealedSolution);
         this.initializeSelection();
+        this.ensureWordTimings();
       } catch (error) {
         this.createNewLayout(false);
       }
@@ -400,6 +413,7 @@ class CrosswordApp {
     this.render();
     this.updateProgress();
     this.evaluateCompletion(false);
+    this.renderStats(this.completed || this.revealedSolution);
     this.saveState();
     this.startTimer();
   }
@@ -416,8 +430,11 @@ class CrosswordApp {
     this.layout = new CrosswordGenerator(this.entries).generate();
     this.values = new Map();
     this.checked = false;
+    this.checkedPlacements = new Set();
     this.completed = false;
+    this.revealedSolution = false;
     this.elapsedSeconds = 0;
+    this.resetStats();
     this.initializeSelection();
 
     if (shouldSave) {
@@ -431,12 +448,38 @@ class CrosswordApp {
     this.elements.resetButton.addEventListener("click", () => this.resetPuzzle());
     this.elements.newButton.addEventListener("click", () => this.newPuzzle());
     this.elements.themeButton.addEventListener("click", () => this.toggleTheme());
-    this.elements.printButton.addEventListener("click", () => window.print());
   }
 
   initializeSelection() {
     this.activePlacementId = this.layout.placements[0]?.id || null;
     this.activeCellKey = this.layout.placements[0]?.cells[0] || null;
+  }
+
+  resetStats() {
+    this.wordTimings = new Map();
+    this.lastInputAt = null;
+    this.longestPause = 0;
+    this.ensureWordTimings();
+  }
+
+  ensureWordTimings() {
+    const placementIds = new Set(this.layout.placements.map((placement) => placement.id));
+
+    for (const placementId of [...this.wordTimings.keys()]) {
+      if (!placementIds.has(placementId)) {
+        this.wordTimings.delete(placementId);
+      }
+    }
+
+    for (const placement of this.layout.placements) {
+      if (!this.wordTimings.has(placement.id)) {
+        this.wordTimings.set(placement.id, {
+          startedAt: null,
+          completedAt: null,
+          duration: null,
+        });
+      }
+    }
   }
 
   render() {
@@ -453,7 +496,9 @@ class CrosswordApp {
     const width = bounds.maxCol - bounds.minCol + 1;
     grid.innerHTML = "";
     grid.style.setProperty("--grid-columns", width);
+    grid.classList.toggle("animating", this.animateNextRender);
 
+    let tileIndex = 0;
     for (let row = bounds.minRow; row <= bounds.maxRow; row += 1) {
       for (let col = bounds.minCol; col <= bounds.maxCol; col += 1) {
         const key = toCellKey(row, col);
@@ -466,15 +511,22 @@ class CrosswordApp {
           continue;
         }
 
-        grid.appendChild(this.createCellElement(key, cell));
+        grid.appendChild(this.createCellElement(key, cell, tileIndex));
+        tileIndex += 1;
       }
+    }
+
+    if (this.animateNextRender) {
+      window.setTimeout(() => grid.classList.remove("animating"), 800);
+      this.animateNextRender = false;
     }
   }
 
-  createCellElement(key, cell) {
+  createCellElement(key, cell, tileIndex) {
     const wrapper = document.createElement("div");
     wrapper.className = this.cellClassName(key, cell);
     wrapper.dataset.key = key;
+    wrapper.style.setProperty("--tile-delay", `${Math.min(tileIndex * 5, 240)}ms`);
 
     const number = this.getCellNumber(key);
     if (number) {
@@ -509,7 +561,10 @@ class CrosswordApp {
     if (cell.words.has(this.activePlacementId)) classes.push("selected");
     if (key === this.activeCellKey) classes.push("active");
 
-    if (this.checked && this.values.get(key)) {
+    const shouldShowCheck =
+      this.checked || [...cell.words].some((wordId) => this.checkedPlacements.has(wordId));
+
+    if (shouldShowCheck && this.values.get(key)) {
       classes.push(this.values.get(key) === cell.letter ? "correct" : "wrong");
     }
 
@@ -633,16 +688,18 @@ class CrosswordApp {
 
     if (event.key === "Backspace") {
       event.preventDefault();
+      const changedPlacementId = this.activePlacementId;
       this.values.delete(key);
       this.moveWithinActiveWord(-1);
-      this.afterValueChange();
+      this.afterValueChange({ changedPlacementId });
       return;
     }
 
     if (event.key === "Delete") {
       event.preventDefault();
+      const changedPlacementId = this.activePlacementId;
       this.values.delete(key);
-      this.afterValueChange();
+      this.afterValueChange({ changedPlacementId });
       this.focusActiveCell();
       return;
     }
@@ -650,23 +707,26 @@ class CrosswordApp {
     const normalized = normalizeAnswer(event.key);
     if (normalized.length === 1) {
       event.preventDefault();
+      const changedPlacementId = this.activePlacementId;
       this.values.set(key, normalized);
       this.moveWithinActiveWord(1);
-      this.afterValueChange();
+      this.afterValueChange({ changedPlacementId, autoCheck: true });
     }
   }
 
   handleInput(event, key) {
     const normalized = normalizeAnswer(event.target.value).slice(-1);
     if (!normalized) {
+      const changedPlacementId = this.activePlacementId;
       this.values.delete(key);
-      this.afterValueChange();
+      this.afterValueChange({ changedPlacementId });
       return;
     }
 
+    const changedPlacementId = this.activePlacementId;
     this.values.set(key, normalized);
     this.moveWithinActiveWord(1);
-    this.afterValueChange();
+    this.afterValueChange({ changedPlacementId, autoCheck: true });
   }
 
   moveByArrow(key, direction, step) {
@@ -700,12 +760,115 @@ class CrosswordApp {
     this.selectPlacement(placements[nextIndex].id, true);
   }
 
-  afterValueChange(clearChecked = true) {
+  recordInputForWord(placementId) {
+    const timing = this.wordTimings.get(placementId);
+    if (!timing) return;
+
+    const now = this.elapsedSeconds;
+    if (this.lastInputAt !== null) {
+      this.longestPause = Math.max(this.longestPause, Math.max(0, now - this.lastInputAt));
+    }
+    this.lastInputAt = now;
+
+    if (timing.startedAt === null || timing.startedAt === undefined) {
+      timing.startedAt = now;
+    }
+  }
+
+  syncCompletedWordTimings() {
+    for (const placement of this.layout.placements) {
+      const timing = this.wordTimings.get(placement.id);
+      if (!timing || timing.completedAt === null || timing.completedAt === undefined) {
+        continue;
+      }
+
+      if (!this.isPlacementCorrect(placement)) {
+        timing.completedAt = null;
+        timing.duration = null;
+      }
+    }
+  }
+
+  autoCheckPlacement(placementId) {
+    const placement = this.getPlacement(placementId);
+    if (!placement || !this.isPlacementFilled(placement)) return;
+    this.checkPlacement(placement, false);
+  }
+
+  checkActivePlacement() {
+    const placement = this.getPlacement(this.activePlacementId);
+    if (!placement) return;
+    this.checkPlacement(placement, true);
+  }
+
+  checkPlacement(placement, showEmptyMessage) {
+    if (!this.isPlacementFilled(placement)) {
+      if (showEmptyMessage) {
+        this.setMessage("Caselle ancora vuote", "warning");
+      }
+      return;
+    }
+
+    this.checkedPlacements.add(placement.id);
+    if (this.isPlacementCorrect(placement)) {
+      this.markPlacementCompleted(placement.id);
+      this.setMessage("Parola corretta", "correct");
+    } else {
+      this.setMessage("Parola sbagliata", "wrong");
+    }
+    this.refreshCells();
+  }
+
+  isPlacementFilled(placement) {
+    return placement.cells.every((key) => Boolean(this.values.get(key)));
+  }
+
+  isPlacementCorrect(placement) {
+    return placement.cells.every((key, index) => this.values.get(key) === placement.answer[index]);
+  }
+
+  markPlacementCompleted(placementId) {
+    const timing = this.wordTimings.get(placementId);
+    if (!timing || timing.completedAt !== null) return;
+
+    const now = this.elapsedSeconds;
+    if (timing.startedAt === null || timing.startedAt === undefined) {
+      timing.startedAt = now;
+    }
+    timing.completedAt = now;
+    timing.duration = Math.max(0, now - timing.startedAt);
+  }
+
+  markStartedCorrectWordsCompleted() {
+    for (const placement of this.layout.placements) {
+      const timing = this.wordTimings.get(placement.id);
+      if (timing?.startedAt !== null && timing?.startedAt !== undefined && this.isPlacementCorrect(placement)) {
+        this.markPlacementCompleted(placement.id);
+      }
+    }
+  }
+
+  setMessage(text, type = "") {
+    this.elements.message.className = type ? `message ${type}` : "message";
+    this.elements.message.textContent = text;
+  }
+
+  afterValueChange({ clearChecked = true, changedPlacementId = null, autoCheck = false } = {}) {
     if (clearChecked) {
       this.checked = false;
     }
+    if (clearChecked && !this.revealedSolution) {
+      this.setMessage("");
+    }
+    if (changedPlacementId) {
+      this.recordInputForWord(changedPlacementId);
+    }
+    this.syncCompletedWordTimings();
     this.updateProgress();
     this.refreshCells();
+    if (autoCheck && changedPlacementId) {
+      this.autoCheckPlacement(changedPlacementId);
+    }
     this.saveState();
     this.evaluateCompletion();
   }
@@ -717,40 +880,127 @@ class CrosswordApp {
     this.elements.completion.textContent = `Completamento: ${percent}%`;
   }
 
+  renderStats(visible) {
+    this.elements.statsPanel.hidden = !visible;
+    if (!visible) {
+      this.elements.statsList.innerHTML = "";
+      return;
+    }
+
+    const completedWords = this.layout.placements
+      .map((placement) => ({
+        placement,
+        timing: this.wordTimings.get(placement.id),
+      }))
+      .filter(({ timing }) => Number.isFinite(timing?.duration));
+
+    const average =
+      completedWords.length === 0
+        ? null
+        : Math.round(
+            completedWords.reduce((total, { timing }) => total + timing.duration, 0) /
+              completedWords.length,
+          );
+    const fastest = completedWords.reduce((best, item) => {
+      if (!best || item.timing.duration < best.timing.duration) {
+        return item;
+      }
+      return best;
+    }, null);
+
+    this.elements.statsList.innerHTML = "";
+    [
+      {
+        label: "Tempo medio",
+        value: average === null ? "N/D" : formatTime(average),
+        detail: `${completedWords.length}/${this.layout.placements.length} risposte completate`,
+      },
+      {
+        label: "Pausa piu lunga",
+        value: formatTime(this.longestPause),
+        detail: "Intervallo massimo tra due inserimenti",
+      },
+      {
+        label: "Risposta piu veloce",
+        value: fastest ? formatTime(fastest.timing.duration) : "N/D",
+        detail: fastest ? `${fastest.placement.number}. ${fastest.placement.clue}` : "Nessuna parola completata",
+      },
+    ].forEach((stat) => this.elements.statsList.appendChild(this.createStatElement(stat)));
+  }
+
+  createStatElement(stat) {
+    const item = document.createElement("div");
+    item.className = "stat-item";
+
+    const label = document.createElement("span");
+    label.className = "stat-label";
+    label.textContent = stat.label;
+
+    const value = document.createElement("span");
+    value.className = "stat-value";
+    value.textContent = stat.value;
+
+    const detail = document.createElement("span");
+    detail.className = "stat-detail";
+    detail.textContent = stat.detail;
+
+    item.append(label, value, detail);
+    return item;
+  }
+
   checkAnswers() {
-    this.checked = true;
+    this.checkActivePlacement();
     this.refreshCells();
     this.updateProgress();
-    this.evaluateCompletion(true);
+    this.evaluateCompletion(false);
     this.saveState();
   }
 
   solvePuzzle() {
+    if (!window.confirm("Mostrare la soluzione completa? Questa azione riempira tutte le caselle.")) {
+      return;
+    }
+
     for (const [key, cell] of this.layout.cells.entries()) {
       this.values.set(key, cell.letter);
     }
     this.checked = true;
-    this.afterValueChange(false);
+    this.revealedSolution = true;
+    this.completed = true;
+    this.elements.message.className = "message success";
+    this.elements.message.textContent = "Soluzione mostrata.";
+    this.renderStats(true);
+    this.afterValueChange({ clearChecked: false });
   }
 
   resetPuzzle() {
+    if (!window.confirm("Svuotare il cruciverba e azzerare il timer?")) {
+      return;
+    }
+
     this.values = new Map();
     this.checked = false;
+    this.checkedPlacements = new Set();
     this.completed = false;
+    this.revealedSolution = false;
     this.elapsedSeconds = 0;
+    this.resetStats();
     document.body.classList.remove("celebrating");
     this.elements.message.className = "message";
     this.elements.message.textContent = "";
     this.selectPlacement(this.layout.placements[0]?.id, true);
     this.updateTimer();
+    this.renderStats(false);
     this.afterValueChange();
   }
 
   newPuzzle() {
     this.createNewLayout(true);
+    this.animateNextRender = true;
     document.body.classList.remove("celebrating");
     this.elements.message.className = "message";
     this.elements.message.textContent = "";
+    this.renderStats(false);
     this.render();
     this.saveState();
   }
@@ -762,20 +1012,30 @@ class CrosswordApp {
 
     if (allCorrect) {
       this.completed = true;
+      this.markStartedCorrectWordsCompleted();
       this.elements.message.className = "message success";
-      this.elements.message.textContent =
-        "🎉 Complimenti Benzi! Hai completato il cruciverba!";
-      document.body.classList.add("celebrating");
+
+      if (this.revealedSolution) {
+        this.elements.message.textContent = "Soluzione mostrata.";
+      } else {
+        this.elements.message.textContent =
+          "🎉 Complimenti Benzi! Hai completato il cruciverba!";
+        document.body.classList.add("celebrating");
+      }
+
+      this.renderStats(true);
       this.saveState();
       return;
     }
 
     this.completed = false;
     document.body.classList.remove("celebrating");
-    this.elements.message.className = "message";
-    this.elements.message.textContent = showPartialMessage
-      ? "Ci sono ancora caselle da correggere."
-      : "";
+    if (showPartialMessage) {
+      this.setMessage("Caselle ancora vuote", "warning");
+    }
+    if (!this.revealedSolution) {
+      this.renderStats(false);
+    }
   }
 
   toggleTheme() {
@@ -835,6 +1095,11 @@ class CrosswordApp {
           values: Object.fromEntries(this.values),
           layout,
           elapsedSeconds: this.elapsedSeconds,
+          checkedPlacements: [...this.checkedPlacements],
+          wordTimings: Object.fromEntries(this.wordTimings),
+          lastInputAt: this.lastInputAt,
+          longestPause: this.longestPause,
+          revealedSolution: this.revealedSolution,
           theme,
         }),
       );
