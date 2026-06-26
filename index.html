@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lazy Crossword</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Lazy Crossword</p>
+          <h1>Cruciverba per Benzi</h1>
+        </div>
+        <div class="status-bar" aria-live="polite">
+          <span id="completion">Completamento: 0%</span>
+          <span id="timer">00:00</span>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="crossword-panel" aria-label="Cruciverba">
+          <div class="toolbar" aria-label="Azioni cruciverba">
+            <button type="button" id="check-button">Controlla</button>
+            <button type="button" id="solve-button">Mostra soluzione</button>
+            <button type="button" id="reset-button">Reset</button>
+            <button type="button" id="new-button">Nuovo cruciverba</button>
+            <button type="button" id="theme-button" aria-pressed="false">Tema scuro</button>
+            <button type="button" id="print-button">Stampa</button>
+          </div>
+
+          <p id="message" class="message" aria-live="polite"></p>
+          <div class="grid-wrap">
+            <div id="grid" class="crossword-grid" aria-label="Griglia cruciverba"></div>
+          </div>
+        </section>
+
+        <aside class="clues-panel" aria-label="Definizioni">
+          <h2>Definizioni</h2>
+
+          <section class="clue-group" aria-labelledby="across-title">
+            <h3 id="across-title">Orizzontali</h3>
+            <ol id="across-clues" class="clue-list"></ol>
+          </section>
+
+          <section class="clue-group" aria-labelledby="down-title">
+            <h3 id="down-title">Verticali</h3>
+            <ol id="down-clues" class="clue-list"></ol>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <script src="script.js"></script>
+  </body>
+</html>
