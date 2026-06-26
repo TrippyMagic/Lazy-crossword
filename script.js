@@ -362,6 +362,7 @@ class CrosswordApp {
     this.activePlacementId = null;
     this.checked = false;
     this.checkedPlacements = new Set();
+    this.lockedPlacements = new Set();
     this.elapsedSeconds = 0;
     this.completed = false;
     this.revealedSolution = false;
@@ -371,6 +372,8 @@ class CrosswordApp {
     this.longestPause = 0;
     this.animateNextRender = false;
     this.displayTileStates = new Map();
+    this.pendingConfirmation = null;
+    this.lastFocusedElement = null;
 
     this.elements = {
       grid: document.querySelector("#grid"),
@@ -386,6 +389,11 @@ class CrosswordApp {
       resetButton: document.querySelector("#reset-button"),
       newButton: document.querySelector("#new-button"),
       themeButton: document.querySelector("#theme-button"),
+      confirmOverlay: document.querySelector("#confirm-overlay"),
+      confirmTitle: document.querySelector("#confirm-title"),
+      confirmMessage: document.querySelector("#confirm-message"),
+      confirmCancel: document.querySelector("#confirm-cancel"),
+      confirmAccept: document.querySelector("#confirm-accept"),
     };
   }
 
@@ -412,6 +420,7 @@ class CrosswordApp {
     this.values = new Map();
     this.checked = false;
     this.checkedPlacements = new Set();
+    this.lockedPlacements = new Set();
     this.completed = false;
     this.revealedSolution = false;
     this.elapsedSeconds = 0;
@@ -429,6 +438,18 @@ class CrosswordApp {
     this.elements.resetButton.addEventListener("click", () => this.resetPuzzle());
     this.elements.newButton.addEventListener("click", () => this.newPuzzle());
     this.elements.themeButton.addEventListener("click", () => this.toggleTheme());
+    this.elements.confirmCancel.addEventListener("click", () => this.resolveConfirmation(false));
+    this.elements.confirmAccept.addEventListener("click", () => this.resolveConfirmation(true));
+    this.elements.confirmOverlay.addEventListener("click", (event) => {
+      if (event.target === this.elements.confirmOverlay) {
+        this.resolveConfirmation(false);
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (!this.elements.confirmOverlay.hidden && event.key === "Escape") {
+        this.resolveConfirmation(false);
+      }
+    });
   }
 
   initializeSelection() {
@@ -636,9 +657,11 @@ class CrosswordApp {
     input.maxLength = 1;
     input.autocomplete = "off";
     input.spellcheck = false;
+    input.readOnly = this.isCellLocked(key);
     input.value = this.values.get(key) || "";
     input.dataset.key = key;
     input.setAttribute("aria-label", `Casella ${key}`);
+    input.setAttribute("aria-readonly", String(input.readOnly));
 
     input.addEventListener("focus", () => this.selectCell(key, false));
     input.addEventListener("click", () => this.selectCell(key, false));
@@ -685,7 +708,16 @@ class CrosswordApp {
       classes.push(this.values.get(key) === cell.letter ? "correct" : "wrong");
     }
 
+    if (this.isCellLocked(key)) {
+      classes.push("locked");
+    }
+
     return classes.join(" ");
+  }
+
+  isCellLocked(key) {
+    const cell = this.layout?.cells.get(key);
+    return Boolean(cell && [...cell.words].some((wordId) => this.lockedPlacements.has(wordId)));
   }
 
   getCellNumber(key) {
@@ -734,7 +766,9 @@ class CrosswordApp {
     text.appendChild(document.createTextNode(" "));
     text.appendChild(length);
     button.append(number, text);
-    button.addEventListener("click", () => this.selectPlacement(placement.id, true));
+    button.addEventListener("click", () =>
+      this.selectPlacement(placement.id, true, { scrollToWord: true }),
+    );
 
     item.appendChild(button);
     return item;
@@ -759,15 +793,21 @@ class CrosswordApp {
     this.paintSelection();
   }
 
-  selectPlacement(placementId, focusFirstOpen) {
+  selectPlacement(placementId, focusFirstOpen, options = {}) {
     const placement = this.getPlacement(placementId);
     if (!placement) return;
 
     this.activePlacementId = placement.id;
     this.activeCellKey =
-      (focusFirstOpen && placement.cells.find((key) => !this.values.get(key))) || placement.cells[0];
+      (focusFirstOpen &&
+        placement.cells.find((key) => !this.values.get(key) && !this.isCellLocked(key))) ||
+      placement.cells[0];
     this.paintSelection();
     this.focusActiveCell();
+
+    if (options.scrollToWord) {
+      this.scrollPlacementIntoView(placement);
+    }
   }
 
   paintSelection() {
@@ -784,8 +824,44 @@ class CrosswordApp {
       const cell = this.layout.cells.get(key);
       cellElement.className = this.cellClassName(key, cell);
       const input = cellElement.querySelector("input");
+      input.readOnly = this.isCellLocked(key);
+      input.setAttribute("aria-readonly", String(input.readOnly));
       input.value = this.values.get(key) || "";
     }
+  }
+
+  scrollPlacementIntoView(placement) {
+    const cellElements = placement.cells
+      .map((key) => this.getCellElement(key))
+      .filter(Boolean);
+    const gridWrap = this.elements.grid.closest(".grid-wrap");
+    if (!cellElements.length || !gridWrap) return;
+
+    const wrapRect = gridWrap.getBoundingClientRect();
+    const cellRects = cellElements.map((element) => element.getBoundingClientRect());
+    const left = Math.min(...cellRects.map((rect) => rect.left));
+    const right = Math.max(...cellRects.map((rect) => rect.right));
+    const top = Math.min(...cellRects.map((rect) => rect.top));
+    const bottom = Math.max(...cellRects.map((rect) => rect.bottom));
+    const targetLeft = gridWrap.scrollLeft + (left + right) / 2 - wrapRect.left - gridWrap.clientWidth / 2;
+    const targetTop = gridWrap.scrollTop + (top + bottom) / 2 - wrapRect.top - gridWrap.clientHeight / 2;
+
+    gridWrap.scrollTo({
+      left: Math.max(0, targetLeft),
+      top: Math.max(0, targetTop),
+      behavior: "smooth",
+    });
+
+    if (window.matchMedia("(max-width: 840px)").matches) {
+      const middleCell = cellElements[Math.floor(cellElements.length / 2)];
+      middleCell.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    }
+  }
+
+  getCellElement(key) {
+    return [...document.querySelectorAll(".cell.used")].find(
+      (candidate) => candidate.dataset.key === key,
+    );
   }
 
   handleKeydown(event, key) {
@@ -809,11 +885,18 @@ class CrosswordApp {
       return;
     }
 
+    if (this.isCellLocked(key)) {
+      if (event.key === "Backspace" || event.key === "Delete" || normalizeAnswer(event.key).length === 1) {
+        event.preventDefault();
+      }
+      return;
+    }
+
     if (event.key === "Backspace") {
       event.preventDefault();
       const changedPlacementId = this.activePlacementId;
       this.values.delete(key);
-      this.moveWithinActiveWord(-1);
+      this.moveWithinActiveWord(-1, { skipLocked: true });
       this.afterValueChange({ changedPlacementId });
       return;
     }
@@ -832,12 +915,17 @@ class CrosswordApp {
       event.preventDefault();
       const changedPlacementId = this.activePlacementId;
       this.values.set(key, normalized);
-      this.moveWithinActiveWord(1);
+      this.moveWithinActiveWord(1, { skipLocked: true });
       this.afterValueChange({ changedPlacementId, autoCheck: true });
     }
   }
 
   handleInput(event, key) {
+    if (this.isCellLocked(key)) {
+      event.target.value = this.values.get(key) || "";
+      return;
+    }
+
     const normalized = normalizeAnswer(event.target.value).slice(-1);
     if (!normalized) {
       const changedPlacementId = this.activePlacementId;
@@ -848,7 +936,7 @@ class CrosswordApp {
 
     const changedPlacementId = this.activePlacementId;
     this.values.set(key, normalized);
-    this.moveWithinActiveWord(1);
+    this.moveWithinActiveWord(1, { skipLocked: true });
     this.afterValueChange({ changedPlacementId, autoCheck: true });
   }
 
@@ -862,12 +950,23 @@ class CrosswordApp {
     this.moveWithinActiveWord(step);
   }
 
-  moveWithinActiveWord(step) {
+  moveWithinActiveWord(step, options = {}) {
     const placement = this.getPlacement(this.activePlacementId);
     if (!placement) return;
 
     const currentIndex = Math.max(0, placement.cells.indexOf(this.activeCellKey));
-    const nextIndex = Math.min(placement.cells.length - 1, Math.max(0, currentIndex + step));
+    let nextIndex = Math.min(placement.cells.length - 1, Math.max(0, currentIndex + step));
+
+    if (options.skipLocked) {
+      while (
+        nextIndex > 0 &&
+        nextIndex < placement.cells.length - 1 &&
+        this.isCellLocked(placement.cells[nextIndex])
+      ) {
+        nextIndex += step;
+      }
+    }
+
     this.activeCellKey = placement.cells[nextIndex];
     this.paintSelection();
     this.focusActiveCell();
@@ -934,6 +1033,7 @@ class CrosswordApp {
 
     this.checkedPlacements.add(placement.id);
     if (this.isPlacementCorrect(placement)) {
+      this.lockedPlacements.add(placement.id);
       this.markPlacementCompleted(placement.id);
       this.setMessage("Parola corretta", "correct");
     } else {
@@ -976,11 +1076,45 @@ class CrosswordApp {
     this.elements.message.textContent = text;
   }
 
+  requestConfirmation({ title, message, acceptLabel = "Conferma" }) {
+    if (this.pendingConfirmation) {
+      this.resolveConfirmation(false);
+    }
+
+    this.lastFocusedElement = document.activeElement;
+    this.elements.confirmTitle.textContent = title;
+    this.elements.confirmMessage.textContent = message;
+    this.elements.confirmAccept.textContent = acceptLabel;
+    this.elements.confirmOverlay.hidden = false;
+    this.elements.confirmCancel.focus();
+
+    return new Promise((resolve) => {
+      this.pendingConfirmation = resolve;
+    });
+  }
+
+  resolveConfirmation(confirmed) {
+    if (!this.pendingConfirmation) return;
+
+    const resolve = this.pendingConfirmation;
+    this.pendingConfirmation = null;
+    this.elements.confirmOverlay.hidden = true;
+    resolve(confirmed);
+
+    if (this.lastFocusedElement?.focus) {
+      this.lastFocusedElement.focus({ preventScroll: true });
+    }
+    this.lastFocusedElement = null;
+  }
+
   afterValueChange({ clearChecked = true, changedPlacementId = null, autoCheck = false } = {}) {
     if (!this.layout) return;
 
     if (clearChecked) {
       this.checked = false;
+    }
+    if (changedPlacementId && !this.lockedPlacements.has(changedPlacementId)) {
+      this.checkedPlacements.delete(changedPlacementId);
     }
     if (clearChecked && !this.revealedSolution) {
       this.setMessage("");
@@ -1094,10 +1228,16 @@ class CrosswordApp {
     this.saveState();
   }
 
-  solvePuzzle() {
+  async solvePuzzle() {
     if (!this.layout) return;
 
-    if (!window.confirm("Mostrare la soluzione completa? Questa azione riempira tutte le caselle.")) {
+    const confirmed = await this.requestConfirmation({
+      title: "Mostrare la soluzione?",
+      message: "Questa azione riempira tutte le caselle e mostrera le statistiche.",
+      acceptLabel: "Mostra soluzione",
+    });
+
+    if (!confirmed) {
       return;
     }
 
@@ -1105,6 +1245,7 @@ class CrosswordApp {
       this.values.set(key, cell.letter);
     }
     this.checked = true;
+    this.lockedPlacements = new Set(this.layout.placements.map((placement) => placement.id));
     this.revealedSolution = true;
     this.completed = true;
     this.elements.message.className = "message success";
@@ -1113,16 +1254,23 @@ class CrosswordApp {
     this.afterValueChange({ clearChecked: false });
   }
 
-  resetPuzzle() {
+  async resetPuzzle() {
     if (!this.layout) return;
 
-    if (!window.confirm("Svuotare il cruciverba e azzerare il timer?")) {
+    const confirmed = await this.requestConfirmation({
+      title: "Resettare il cruciverba?",
+      message: "Questa azione svuota tutte le caselle e azzera timer e statistiche.",
+      acceptLabel: "Reset",
+    });
+
+    if (!confirmed) {
       return;
     }
 
     this.values = new Map();
     this.checked = false;
     this.checkedPlacements = new Set();
+    this.lockedPlacements = new Set();
     this.completed = false;
     this.revealedSolution = false;
     this.elapsedSeconds = 0;
@@ -1251,6 +1399,7 @@ class CrosswordApp {
           layout,
           elapsedSeconds: this.elapsedSeconds,
           checkedPlacements: [...this.checkedPlacements],
+          lockedPlacements: [...this.lockedPlacements],
           wordTimings: Object.fromEntries(this.wordTimings),
           lastInputAt: this.lastInputAt,
           longestPause: this.longestPause,

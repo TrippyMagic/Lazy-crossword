@@ -253,6 +253,59 @@ h1 {
   font-weight: 800;
 }
 
+.confirm-overlay {
+  align-items: center;
+  background: rgba(17, 23, 22, 0.52);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 1rem;
+  position: fixed;
+  z-index: 20;
+}
+
+.confirm-overlay[hidden] {
+  display: none;
+}
+
+.confirm-modal {
+  animation: modal-in 160ms ease;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+  max-width: 26rem;
+  padding: 1rem;
+  width: min(100%, 26rem);
+}
+
+.confirm-modal h2 {
+  font-size: 1.2rem;
+  margin-bottom: 0.45rem;
+}
+
+.confirm-modal p {
+  color: var(--muted);
+  margin-bottom: 1rem;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 0.55rem;
+  justify-content: flex-end;
+}
+
+.confirm-cancel {
+  background: var(--surface-strong);
+  color: var(--text);
+}
+
+.confirm-accept {
+  background: var(--danger);
+  color: #ffffff;
+  font-weight: 800;
+}
+
 .stats-panel {
   background: var(--surface-strong);
   border: 1px solid var(--line);
@@ -398,6 +451,14 @@ h1 {
   background: var(--wrong);
 }
 
+.cell.locked .tile-front {
+  box-shadow: inset 0 0 0 2px rgba(31, 42, 36, 0.18);
+}
+
+.cell.locked .cell-input {
+  cursor: default;
+}
+
 .crossword-grid.revealing .cell.revealing .cell-card {
   animation: tile-flip 620ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
   animation-delay: var(--tile-delay, 0ms);
@@ -520,6 +581,17 @@ body.celebrating .crossword-panel {
   }
 }
 
+@keyframes modal-in {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 @keyframes tile-flip {
   0% {
     transform: rotateY(0deg);
@@ -572,6 +644,10 @@ body.celebrating .crossword-panel {
 
   .toolbar button {
     flex: 1 1 9rem;
+  }
+
+  .confirm-actions {
+    flex-direction: column-reverse;
   }
 
   .stats-list {
